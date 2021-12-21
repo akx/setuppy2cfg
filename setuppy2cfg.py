@@ -1,5 +1,6 @@
 import argparse
 import ast
+import inspect
 import sys
 
 import textwrap
@@ -58,6 +59,15 @@ def warn(msg):
     print("***", msg, file=sys.stderr)
 
 
+def call_to_args(call: ast.Call, func) -> Dict[str, Any]:
+    """
+    Take an AST call and interpret its args + kwargs with func.
+    """
+    args = [ast.literal_eval(arg) for arg in call.args]
+    kwargs = {kw.arg: ast.literal_eval(kw.value) for kw in call.keywords}
+    return inspect.signature(func).bind(*args, **kwargs).arguments
+
+
 class Walker(ast.NodeVisitor):
     def __init__(self, source: str):
         self.source = source
@@ -76,26 +86,52 @@ class Walker(ast.NodeVisitor):
         if self.get_source_segment(node.func).endswith("setup"):
             self.process_setup_call(node)
 
-    def process_setup_call(self, node: ast.Call):
+    def process_setup_call(self, node: ast.Call) -> None:
         for kw in node.keywords:
-            arg = kw.arg
-            output_key = None
-            if arg in METADATA_KEYS:
-                output_key = ("metadata", arg)
-            elif arg in OPTIONS_KEYS:
-                output_key = ("options", arg)
-            if not output_key:
-                warn(f"No output mapping for {arg}")
-                continue
-            try:
+            self.process_setup_keyword(kw)
+
+    def process_setup_keyword(self, kw: ast.keyword) -> None:
+        arg = kw.arg
+        output_key = None
+        if arg in METADATA_KEYS:
+            output_key = ("metadata", arg)
+        elif arg in OPTIONS_KEYS:
+            output_key = ("options", arg)
+        if not output_key:
+            warn(f"No output mapping for {arg}")
+            return
+        try:
+            value = None
+            if output_key == ("options", "packages"):
+                if self.is_find_packages_call(kw.value):
+                    value = self.process_find_packages(kw.value)
+            if value is None:
                 value = self.get_value(kw.value)
-                output_section, output_key = output_key
-                self.output[output_section][output_key] = value
-            except Exception as exc:
-                ind_source = textwrap.indent(self.get_source_segment(kw.value), "|  ")
-                self.warn(
-                    f"Unable to get value for {output_key or arg}: {exc}\n{ind_source}"
-                )
+            output_section, output_key = output_key
+            self.output[output_section][output_key] = value
+        except Exception as exc:
+            ind_source = textwrap.indent(self.get_source_segment(kw.value), "|  ")
+            self.warn(
+                f"Unable to get value for {output_key or arg}: {exc}\n{ind_source}"
+            )
+
+    def is_find_packages_call(self, node: ast.AST) -> bool:
+        if not isinstance(node, ast.Call):
+            return False
+        return self.get_source_segment(node.func).endswith("find_packages")
+
+    def process_find_packages(self, call: ast.Call) -> str:
+        import setuptools
+
+        fp_args = call_to_args(call, setuptools.find_packages)
+        where = fp_args.get("where", ".")
+        if where != ".":
+            raise ValueError(f"Unable to process find_packages(where={where!r}, ...)")
+        for key in ("include", "exclude"):
+            value = fp_args.get(key)
+            if value:
+                self.output["options.packages.find"][key] = list(value)
+        return "find:"
 
     def get_output(self):
         return deepcopy(dict(self.output))
