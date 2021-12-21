@@ -9,3 +9,5 @@ python3 setuppy2cfg.py < setup.py >> setup.cfg
 ```
 
 All non-convertible bits and pieces, and errors regarding those will be printed out onto stderr.
+
+They will also be comments in the generated output.

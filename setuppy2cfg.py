@@ -7,6 +7,7 @@ from collections import defaultdict
 from copy import deepcopy
 
 # gleaned from https://raw.githubusercontent.com/pypa/setuptools/main/docs/userguide/declarative_config.rst
+from typing import Dict, Any, List
 
 METADATA_KEYS = {
     "name": "str",
@@ -61,6 +62,7 @@ class Walker(ast.NodeVisitor):
     def __init__(self, source: str):
         self.source = source
         self.output = defaultdict(dict)
+        self.warnings = []
 
     def get_source_segment(self, node: ast.AST) -> str:
         return ast.get_source_segment(self.source, node)
@@ -91,10 +93,44 @@ class Walker(ast.NodeVisitor):
                 self.output[output_section][output_key] = value
             except Exception as exc:
                 ind_source = textwrap.indent(self.get_source_segment(kw.value), "|  ")
-                warn(f"Unable to get value for {arg}: {exc}\n{ind_source}")
+                self.warn(
+                    f"Unable to get value for {output_key or arg}: {exc}\n{ind_source}"
+                )
 
     def get_output(self):
         return deepcopy(dict(self.output))
+
+    def warn(self, msg):
+        warn(msg)
+        self.warnings.append(msg)
+
+
+def write_config(
+    config: Dict[str, Dict[str, Any]],
+    warnings: List[str],
+    *,
+    file=None,
+    indent=4,
+):
+    for section, data in config.items():
+        if not data:
+            continue
+        print(f"[{section}]", file=file)
+        for key, value in data.items():
+            if isinstance(value, (str, bool, int)):
+                print(f"{key} = {value}", file=file)
+            elif isinstance(value, list):
+                print(f"{key} =", file=file)
+                for atom in value:
+                    print(f"{' ' * indent}{atom}", file=file)
+            else:
+                msg = f"Non-serializable value {section}.{key}"
+                warn(msg)
+                print(f"# {msg}", file=file)
+        print(file=file)
+
+    for warning in warnings:
+        print(textwrap.indent(warning, "# "), file=file)
 
 
 def main():
@@ -110,21 +146,7 @@ def main():
     config = walker.get_output()
 
     config["options.entry_points"] = config.get("options", {}).pop("entry_points", None)
-
-    for section, data in config.items():
-        if not data:
-            continue
-        print(f"[{section}]")
-        for key, value in data.items():
-            if isinstance(value, (str, bool, int)):
-                print(f"{key} = {value}")
-            elif isinstance(value, list):
-                print(f"{key} =")
-                for atom in value:
-                    print(f"  {atom}")
-            else:
-                warn(f"Non-serializable value {section}.{key}")
-        print()
+    write_config(config, warnings=walker.warnings)
 
 
 if __name__ == "__main__":
